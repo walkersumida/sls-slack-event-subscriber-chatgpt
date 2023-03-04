@@ -1,3 +1,8 @@
+<img width="400" alt="preview" src="https://user-images.githubusercontent.com/12683375/222904957-22ead5d3-cb1a-49fe-9e95-3aff2c14f87b.gif">
+
+
+# Infrastructure
+
 <img width="1185" alt="2023-02-19_17 01 46" src="https://user-images.githubusercontent.com/12683375/219936290-6b7341ba-4de5-43c4-9401-be7c52935cbe.png">
 
 # Setup
@@ -29,6 +34,3 @@ make deploy
 
 ## Add an OAuth Scope
 <img width="663" alt="2023-02-19_17 23 48" src="https://user-images.githubusercontent.com/12683375/219937482-c451c70c-0892-4042-b613-01579152e0b4.png">
-
-# Post a message
-<img width="262" alt="2023-02-19_17 25 16" src="https://user-images.githubusercontent.com/12683375/219937563-1d85055d-862d-4071-9009-83ac2c6ec126.png">

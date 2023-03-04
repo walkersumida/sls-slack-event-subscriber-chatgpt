@@ -16,6 +16,7 @@ provider:
     SLACK_ACCESS_TOKEN: ${env:SLACK_ACCESS_TOKEN}
     SLACK_SIGNING_SECRET: ${env:SLACK_SIGNING_SECRET}
     SLACK_VERIFICATION_TOKEN: ${env:SLACK_VERIFICATION_TOKEN}
+    API_KEY: ${env:API_KEY}
 
   iam:
     role:
@@ -48,3 +49,5 @@ functions:
           method: post
   eventAction:
     handler: bin/event/action
+    memorySize: 1024 # 1 GB
+    timeout: 900 # 15 min
