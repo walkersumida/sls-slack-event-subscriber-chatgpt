@@ -2,50 +2,85 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"regexp"
 
 	l "github.com/aws/aws-lambda-go/lambda"
 	"github.com/go-resty/resty/v2"
-	"github.com/slack-go/slack"
+	slackgo "github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 )
 
-func Handler(ctx context.Context, input *slackevents.AppMentionEvent) {
-	cli := slack.New(os.Getenv("SLACK_ACCESS_TOKEN"))
+func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
+	slack := NewSlack()
 	text := textWithMentionsRemoved(input.Text)
 
-	cID, timestamp, err := cli.PostMessageContext(
+	cID, timestamp, err := slack.cli.PostMessageContext(
 		ctx,
 		input.Channel,
-		slack.MsgOptionText(
+		slackgo.MsgOptionText(
 			"...", false,
 		),
 	)
 	if err != nil {
 		log.Printf("failed to post a message: %s", err)
+		return err
 	}
 
 	client := resty.New()
 	resp, err := chatgpt(client, text)
 	if err != nil {
 		log.Printf("failed to call chatgpt: %s", err)
-		return
+		return err
 	}
 	result := resp.Result().(*Response)
 
-	_, _, _, err = cli.UpdateMessageContext(
+	if resp.IsError() {
+		log.Printf("error: status=%d, response=%+v", resp.StatusCode(), resp.RawResponse)
+
+		msg := fmt.Sprintf("... (http status: %d)", resp.StatusCode())
+		err = slack.updateMessage(ctx, cID, timestamp, msg)
+		if err != nil {
+			log.Printf("failed to update a message: %s", err)
+			return err
+		}
+
+		return err
+	}
+
+	err = slack.updateMessage(ctx, cID, timestamp, result.Choices[0].Message.Content)
+	if err != nil {
+		log.Printf("failed to update a message: %s", err)
+		return err
+	}
+
+	return nil
+}
+
+type Slack struct {
+	cli *slackgo.Client
+}
+
+func NewSlack() *Slack {
+	return &Slack{
+		cli: slackgo.New(os.Getenv("SLACK_ACCESS_TOKEN")),
+	}
+}
+
+func (s *Slack) updateMessage(ctx context.Context, cID, timestamp, msg string) error {
+	_, _, _, err := s.cli.UpdateMessageContext(
 		ctx,
 		cID,
 		timestamp,
-		slack.MsgOptionText(
-			result.Choices[0].Message.Content, false,
-		),
+		slackgo.MsgOptionText(msg, false),
 	)
 	if err != nil {
-		log.Printf("failed to update a message: %s", err)
+		return err
 	}
+
+	return nil
 }
 
 func textWithMentionsRemoved(txt string) string {

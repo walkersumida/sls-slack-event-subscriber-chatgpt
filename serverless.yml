@@ -13,7 +13,7 @@ provider:
     name: "sls-deployment-bucket-${env:SERVICE_NAME}-${env:STAGE}"
     serverSideEncryption: AES256
 
-  logRetentionInDays: 1
+  logRetentionInDays: 7
 
   environment:
     INVOKED_FUNCTION_NAME: ${env:INVOKED_FUNCTION_NAME}
