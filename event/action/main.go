@@ -23,6 +23,7 @@ func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
 		slackgo.MsgOptionText(
 			"...", false,
 		),
+		slackgo.MsgOptionTS(input.TimeStamp),
 	)
 	if err != nil {
 		log.Printf("failed to post a message: %s", err)
@@ -41,7 +42,7 @@ func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
 		log.Printf("error: status=%d, response=%+v", resp.StatusCode(), resp.RawResponse)
 
 		msg := fmt.Sprintf("... (http status: %d)", resp.StatusCode())
-		err = slack.updateMessage(ctx, cID, timestamp, msg)
+		err = slack.updateMessage(ctx, cID, timestamp, msg, input.User)
 		if err != nil {
 			log.Printf("failed to update a message: %s", err)
 			return err
@@ -50,7 +51,7 @@ func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
 		return err
 	}
 
-	err = slack.updateMessage(ctx, cID, timestamp, result.Choices[0].Message.Content)
+	err = slack.updateMessage(ctx, cID, timestamp, result.Choices[0].Message.Content, input.User)
 	if err != nil {
 		log.Printf("failed to update a message: %s", err)
 		return err
@@ -69,7 +70,11 @@ func NewSlack() *Slack {
 	}
 }
 
-func (s *Slack) updateMessage(ctx context.Context, cID, timestamp, msg string) error {
+func (s *Slack) updateMessage(ctx context.Context, cID, timestamp, msg, userID string) error {
+	if userID != "" {
+		msg = fmt.Sprintf("<@%s> %s", userID, msg)
+	}
+
 	_, _, _, err := s.cli.UpdateMessageContext(
 		ctx,
 		cID,
