@@ -17,7 +17,7 @@ func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
 	slack := NewSlack()
 
 	ts := input.TimeStamp
-	if input.ThreadTimeStamp != "" {
+	if isThread(input.ThreadTimeStamp) {
 		ts = input.ThreadTimeStamp
 	}
 	slackMsgs, _, _, err := slack.cli.GetConversationRepliesContext(ctx, &slackgo.GetConversationRepliesParameters{
@@ -58,6 +58,10 @@ func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
 	}
 
 	return nil
+}
+
+func isThread(ts string) bool {
+	return ts != ""
 }
 
 type Slack struct {
@@ -126,9 +130,14 @@ type Usage struct {
 func buildMessage(user string, msgs []slackgo.Message) []Message {
 	msgsBody := []Message{}
 	for _, msg := range msgs {
-		role := "assistant"
-		if msg.User == user {
-			role = "user"
+		role := "user"
+		if isBot(msg.User) {
+			role = "assistant"
+		}
+		if role == "user" {
+			if !isBotMentioned(msg.Text) {
+				continue
+			}
 		}
 		msgsBody = append(msgsBody, Message{
 			Role:    role,
@@ -157,6 +166,15 @@ func chatgpt(client *resty.Client, msgs []Message) (*resty.Response, error) {
 	}
 
 	return resp, nil
+}
+
+func isBot(id string) bool {
+	return id == os.Getenv("SLACK_BOT_USER_ID")
+}
+
+func isBotMentioned(msg string) bool {
+	re := regexp.MustCompile(fmt.Sprintf("<@%s>", os.Getenv("SLACK_BOT_USER_ID")))
+	return re.MatchString(msg)
 }
 
 func main() {
