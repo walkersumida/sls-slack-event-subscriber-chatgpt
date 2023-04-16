@@ -15,23 +15,23 @@ import (
 
 func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
 	slack := NewSlack()
-	text := textWithMentionsRemoved(input.Text)
 
-	cID, timestamp, err := slack.cli.PostMessageContext(
-		ctx,
-		input.Channel,
-		slackgo.MsgOptionText(
-			"...", false,
-		),
-		slackgo.MsgOptionTS(input.TimeStamp),
-	)
+	ts := input.TimeStamp
+	if input.ThreadTimeStamp != "" {
+		ts = input.ThreadTimeStamp
+	}
+	slackMsgs, _, _, err := slack.cli.GetConversationRepliesContext(ctx, &slackgo.GetConversationRepliesParameters{
+		ChannelID: input.Channel,
+		Timestamp: ts,
+	})
 	if err != nil {
-		log.Printf("failed to post a message: %s", err)
+		log.Printf("failed to get conversation replies: %s", err)
 		return err
 	}
 
 	client := resty.New()
-	resp, err := chatgpt(client, text)
+	msgs := buildMessage(input.User, slackMsgs)
+	resp, err := chatgpt(client, msgs)
 	if err != nil {
 		log.Printf("failed to call chatgpt: %s", err)
 		return err
@@ -42,7 +42,7 @@ func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
 		log.Printf("error: status=%d, response=%+v", resp.StatusCode(), resp.RawResponse)
 
 		msg := fmt.Sprintf("... (http status: %d)", resp.StatusCode())
-		err = slack.updateMessage(ctx, cID, timestamp, msg, input.User)
+		err = slack.postMessage(ctx, input.Channel, msg, input.TimeStamp, input.User)
 		if err != nil {
 			log.Printf("failed to update a message: %s", err)
 			return err
@@ -51,9 +51,9 @@ func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
 		return err
 	}
 
-	err = slack.updateMessage(ctx, cID, timestamp, result.Choices[0].Message.Content, input.User)
+	err = slack.postMessage(ctx, input.Channel, result.Choices[0].Message.Content, input.TimeStamp, input.User)
 	if err != nil {
-		log.Printf("failed to update a message: %s", err)
+		log.Printf("failed to post a message: %s", err)
 		return err
 	}
 
@@ -70,16 +70,16 @@ func NewSlack() *Slack {
 	}
 }
 
-func (s *Slack) updateMessage(ctx context.Context, cID, timestamp, msg, userID string) error {
+func (s *Slack) postMessage(ctx context.Context, cID, msg, timeStamp, userID string) error {
 	if userID != "" {
 		msg = fmt.Sprintf("<@%s> %s", userID, msg)
 	}
 
-	_, _, _, err := s.cli.UpdateMessageContext(
+	_, _, err := s.cli.PostMessageContext(
 		ctx,
 		cID,
-		timestamp,
 		slackgo.MsgOptionText(msg, false),
+		slackgo.MsgOptionTS(timeStamp),
 	)
 	if err != nil {
 		return err
@@ -123,7 +123,23 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
-func chatgpt(client *resty.Client, text string) (*resty.Response, error) {
+func buildMessage(user string, msgs []slackgo.Message) []Message {
+	msgsBody := []Message{}
+	for _, msg := range msgs {
+		role := "assistant"
+		if msg.User == user {
+			role = "user"
+		}
+		msgsBody = append(msgsBody, Message{
+			Role:    role,
+			Content: textWithMentionsRemoved(msg.Text),
+		})
+	}
+	log.Printf("built messages: %+v", msgsBody)
+	return msgsBody
+}
+
+func chatgpt(client *resty.Client, msgs []Message) (*resty.Response, error) {
 	resp, err := client.
 		SetHeader("Authorization", "Bearer "+os.Getenv("API_KEY")).
 		SetHeader("Content-Type", "application/json").
@@ -131,7 +147,7 @@ func chatgpt(client *resty.Client, text string) (*resty.Response, error) {
 		SetBody(
 			RequestBody{
 				Model:    "gpt-3.5-turbo",
-				Messages: []Message{{Role: "user", Content: text}},
+				Messages: msgs,
 			},
 		).
 		SetResult(&Response{}).
