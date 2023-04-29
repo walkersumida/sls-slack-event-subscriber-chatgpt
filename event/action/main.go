@@ -155,7 +155,7 @@ func chatgpt(client *resty.Client, msgs []Message) (*resty.Response, error) {
 		R().
 		SetBody(
 			RequestBody{
-				Model:    "gpt-3.5-turbo",
+				Model:    os.Getenv("MODEL"),
 				Messages: msgs,
 			},
 		).
