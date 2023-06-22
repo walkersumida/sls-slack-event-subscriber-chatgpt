@@ -1,27 +1,41 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
+	"strings"
+	"time"
 
 	l "github.com/aws/aws-lambda-go/lambda"
-	"github.com/go-resty/resty/v2"
 	slackgo "github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
+	"github.com/walkersumida/sls-slack-event-subscriber-chatgpt/slackeventdata"
 )
 
-func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
+func Handler(ctx context.Context, input slackeventdata.SlackEventData) error {
+	if input.Type == string(slackevents.Message) && !isBotMentioned(input.Message) {
+		return nil
+	}
+
 	slack := NewSlack()
 
-	ts := input.TimeStamp
-	if isThread(input.ThreadTimeStamp) {
-		ts = input.ThreadTimeStamp
+	timeStamp := input.TimeStamp
+	threadTimeStamp := input.ThreadTimeStamp
+	channel := input.Channel
+	user := input.User
+
+	ts := timeStamp
+	if isThread(threadTimeStamp) {
+		ts = threadTimeStamp
 	}
 	slackMsgs, _, _, err := slack.cli.GetConversationRepliesContext(ctx, &slackgo.GetConversationRepliesParameters{
-		ChannelID: input.Channel,
+		ChannelID: channel,
 		Timestamp: ts,
 	})
 	if err != nil {
@@ -29,35 +43,66 @@ func Handler(ctx context.Context, input *slackevents.AppMentionEvent) error {
 		return err
 	}
 
-	client := resty.New()
-	msgs := buildMessage(input.User, slackMsgs)
-	resp, err := chatgpt(client, msgs)
+	msgs := buildMessage(user, slackMsgs)
+	resp, err := chatgpt(msgs)
 	if err != nil {
 		log.Printf("failed to call chatgpt: %s", err)
 		return err
 	}
-	result := resp.Result().(*Response)
 
-	if resp.IsError() {
-		log.Printf("error: status=%d, response=%+v", resp.StatusCode(), resp.RawResponse)
-
-		msg := fmt.Sprintf("... (http status: %d)", resp.StatusCode())
-		err = slack.postMessage(ctx, input.Channel, msg, input.TimeStamp, input.User)
-		if err != nil {
-			log.Printf("failed to update a message: %s", err)
-			return err
-		}
-
-		return err
-	}
-
-	err = slack.postMessage(ctx, input.Channel, result.Choices[0].Message.Content, input.TimeStamp, input.User)
+	cID, timestamp, err := slack.postMessage(ctx, channel, "...", timeStamp, user)
 	if err != nil {
 		log.Printf("failed to post a message: %s", err)
 		return err
 	}
 
-	return nil
+	now := time.Now()
+	message := ""
+	for {
+		data := make([]byte, 1024)
+		_, err := resp.Body.Read(data)
+		if err != nil {
+			return err
+		}
+
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if line == "data: [DONE]" {
+				if err := slack.updateMessage(ctx, cID, timestamp, message, user); err != nil {
+					log.Printf("failed to update a message: %s", err)
+					return err
+				}
+
+				return nil
+			}
+			re := regexp.MustCompile(`^data: `)
+			if !re.MatchString(line) {
+				continue
+			}
+
+			var r Response
+			if err := json.Unmarshal([]byte(line[5:]), &r); err != nil {
+				log.Println(err)
+				if e, ok := err.(*json.SyntaxError); ok {
+					log.Printf("syntax error at byte offset %d", e.Offset)
+				}
+				continue
+			}
+			if r.Choices[0].Delta == nil || r.Choices[0].Delta.Content == nil {
+				continue
+			}
+
+			message += *r.Choices[0].Delta.Content
+		}
+
+		if time.Since(now) > 3*time.Second {
+			if err := slack.updateMessage(ctx, cID, timestamp, message, ""); err != nil {
+				log.Printf("failed to update a message: %s", err)
+				return err
+			}
+			now = time.Now()
+		}
+	}
 }
 
 func isThread(ts string) bool {
@@ -74,37 +119,52 @@ func NewSlack() *Slack {
 	}
 }
 
-func (s *Slack) postMessage(ctx context.Context, cID, msg, timeStamp, userID string) error {
-	if userID != "" {
-		msg = fmt.Sprintf("<@%s> %s", userID, msg)
-	}
-
-	_, _, err := s.cli.PostMessageContext(
+func (s *Slack) postMessage(ctx context.Context, cID, msg, timeStamp, userID string) (string, string, error) {
+	_, timestamp, err := s.cli.PostMessageContext(
 		ctx,
 		cID,
 		slackgo.MsgOptionText(msg, false),
 		slackgo.MsgOptionTS(timeStamp),
 	)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 
+	return cID, timestamp, nil
+}
+
+func (s *Slack) updateMessage(ctx context.Context, cID, timestamp, msg, userID string) error {
+	if userID != "" {
+		msg = fmt.Sprintf("%s\n<@%s>", msg, userID)
+	}
+
+	_, _, _, err := s.cli.UpdateMessageContext(
+		ctx,
+		cID,
+		timestamp,
+		slackgo.MsgOptionText(msg, false),
+	)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
-func textWithMentionsRemoved(txt string) string {
+func textWithMentionsRemoved(txt *string) *string {
 	re := regexp.MustCompile("<@.+?>")
-	return re.ReplaceAllString(txt, "")
+	replaced := re.ReplaceAllString(*txt, "")
+	return &replaced
 }
 
 type RequestBody struct {
+	Stream   bool      `json:"stream"`
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
 }
 
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    *string `json:"role"`
+	Content *string `json:"content"`
 }
 
 type Response struct {
@@ -116,9 +176,10 @@ type Response struct {
 }
 
 type Choice struct {
-	Index        int     `json:"index"`
-	Message      Message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
+	Index        int      `json:"index"`
+	Delta        *Message `json:"delta"`
+	Message      *Message `json:"message"`
+	FinishReason string   `json:"finish_reason"`
 }
 
 type Usage struct {
@@ -140,27 +201,39 @@ func buildMessage(user string, msgs []slackgo.Message) []Message {
 			}
 		}
 		msgsBody = append(msgsBody, Message{
-			Role:    role,
-			Content: textWithMentionsRemoved(msg.Text),
+			Role:    &role,
+			Content: textWithMentionsRemoved(&msg.Text),
 		})
 	}
-	log.Printf("built messages: %+v", msgsBody)
+
 	return msgsBody
 }
 
-func chatgpt(client *resty.Client, msgs []Message) (*resty.Response, error) {
-	resp, err := client.
-		SetHeader("Authorization", "Bearer "+os.Getenv("API_KEY")).
-		SetHeader("Content-Type", "application/json").
-		R().
-		SetBody(
-			RequestBody{
-				Model:    os.Getenv("MODEL"),
-				Messages: msgs,
-			},
-		).
-		SetResult(&Response{}).
-		Post("https://api.openai.com/v1/chat/completions")
+func chatgpt(msgs []Message) (*http.Response, error) {
+	values := RequestBody{
+		Stream:   true,
+		Model:    os.Getenv("MODEL"),
+		Messages: msgs,
+	}
+	jsonValue, err := json.Marshal(values)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(
+		"POST",
+		"https://api.openai.com/v1/chat/completions",
+		bytes.NewBuffer(jsonValue),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("API_KEY"))
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
