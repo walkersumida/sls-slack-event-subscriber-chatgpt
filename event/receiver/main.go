@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/lambda"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
+	"github.com/walkersumida/sls-slack-event-subscriber-chatgpt/slackeventdata"
 )
 
 func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
@@ -22,7 +23,7 @@ func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		return events.APIGatewayProxyResponse{
 			Body:       request.Body,
 			StatusCode: http.StatusInternalServerError,
-		}, nil
+		}, err
 	}
 
 	switch eventsAPIEvent.Type {
@@ -33,7 +34,7 @@ func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			return events.APIGatewayProxyResponse{
 				Body:       request.Body,
 				StatusCode: http.StatusInternalServerError,
-			}, nil
+			}, err
 		}
 		return response, nil
 	case slackevents.AppRateLimited:
@@ -45,34 +46,13 @@ func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		// noop and proceed
 	}
 
-	data := eventsAPIEvent.InnerEvent.Data.(*slackevents.AppMentionEvent)
-	input, err := buildInvokeInput(data)
+	err = invokeLambdaFunc(request, eventsAPIEvent)
 	if err != nil {
 		log.Printf("ERROR: %s", err)
 		return events.APIGatewayProxyResponse{
 			Body:       request.Body,
 			StatusCode: http.StatusInternalServerError,
-		}, nil
-	}
-
-	sess, err := session.NewSession()
-	if err != nil {
-		log.Printf("ERROR: %s", err)
-		return events.APIGatewayProxyResponse{
-			Body:       request.Body,
-			StatusCode: http.StatusInternalServerError,
-		}, nil
-	}
-
-	ctx := aws.BackgroundContext()
-	svc := lambda.New(sess)
-	_, err = svc.InvokeWithContext(ctx, input)
-	if err != nil {
-		log.Printf("ERROR: %s", err)
-		return events.APIGatewayProxyResponse{
-			Body:       request.Body,
-			StatusCode: http.StatusInternalServerError,
-		}, nil
+		}, err
 	}
 
 	response := events.APIGatewayProxyResponse{
@@ -86,8 +66,28 @@ func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 	return response, nil
 }
 
-func buildInvokeInput(data *slackevents.AppMentionEvent) (*lambda.InvokeInput, error) {
-	b, err := json.Marshal(data)
+func buildInput(e slackevents.EventsAPIEvent) (*lambda.InvokeInput, error) {
+	d := slackeventdata.SlackEventData{}
+	switch e.InnerEvent.Type {
+	case string(slackevents.AppMention):
+		data := e.InnerEvent.Data.(*slackevents.AppMentionEvent)
+		d.Type = string(slackevents.AppMention)
+		d.TimeStamp = data.TimeStamp
+		d.ThreadTimeStamp = data.ThreadTimeStamp
+		d.Channel = data.Channel
+		d.User = data.User
+		d.Message = data.Text
+	case string(slackevents.Message):
+		data := e.InnerEvent.Data.(*slackevents.MessageEvent)
+		d.Type = string(slackevents.Message)
+		d.TimeStamp = data.TimeStamp
+		d.ThreadTimeStamp = data.ThreadTimeStamp
+		d.Channel = data.Channel
+		d.User = data.User
+		d.Message = data.Text
+	}
+
+	b, err := json.Marshal(d)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +160,30 @@ func returnChallengeValue(request events.APIGatewayProxyRequest) (events.APIGate
 		},
 		StatusCode: http.StatusOK,
 	}, nil
+}
+
+func invokeLambdaFunc(request events.APIGatewayProxyRequest, eventsAPIEvent slackevents.EventsAPIEvent) error {
+	input, err := buildInput(eventsAPIEvent)
+	if err != nil {
+		log.Printf("ERROR: %s", err)
+		return err
+	}
+
+	sess, err := session.NewSession()
+	if err != nil {
+		log.Printf("ERROR: %s", err)
+		return err
+	}
+
+	ctx := aws.BackgroundContext()
+	svc := lambda.New(sess)
+	_, err = svc.InvokeWithContext(ctx, input)
+	if err != nil {
+		log.Printf("ERROR: %s", err)
+		return err
+	}
+
+	return nil
 }
 
 func main() {
