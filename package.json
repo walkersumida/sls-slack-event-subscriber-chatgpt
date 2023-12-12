@@ -10,6 +10,7 @@
   "dependencies": {},
   "devDependencies": {
     "serverless": "^3.27.0",
-    "serverless-deployment-bucket": "^1.6.0"
+    "serverless-deployment-bucket": "^1.6.0",
+    "serverless-go-plugin": "^2.2.0"
   }
 }
