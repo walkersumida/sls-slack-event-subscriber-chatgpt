@@ -1,5 +1,8 @@
 .PHONY: deploy undeploy
 
+package:
+	yarn sls package --verbose
+
 deploy:
 	yarn sls deploy --verbose
 
