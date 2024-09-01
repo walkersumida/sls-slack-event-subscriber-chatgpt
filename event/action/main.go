@@ -18,7 +18,7 @@ import (
 	"github.com/walkersumida/sls-slack-event-subscriber-chatgpt/slackeventdata"
 )
 
-const KB = 1024
+const MB = 1024 * 1024
 
 func Handler(ctx context.Context, input slackeventdata.SlackEventData) error {
 	if input.Type == string(slackevents.Message) && !isBotMentioned(input.Message) {
@@ -61,7 +61,7 @@ func Handler(ctx context.Context, input slackeventdata.SlackEventData) error {
 	now := time.Now()
 	message := ""
 	for {
-		data := make([]byte, 5*KB)
+		data := make([]byte, 1*MB)
 		_, err := resp.Body.Read(data)
 		if err != nil {
 			return err
